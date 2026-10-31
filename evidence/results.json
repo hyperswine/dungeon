@@ -1,0 +1,13 @@
+{
+  "passed": true,
+  "runner": "Sol",
+  "checks": [
+    "upstream pure rule suite",
+    "original 3D title",
+    "start game",
+    "movement",
+    "PNG snapshots",
+    "clean quit"
+  ],
+  "build": "native compiler + Sol ELF/QAR2 packager; no Make/Python"
+}

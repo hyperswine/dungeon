@@ -1,0 +1,345 @@
+/* qos_abi.h -- the QOS Portable host <-> app ABI (docs/QOS-PORTABLE.md).
+ *
+ * Shared by qos/portable (the qosp host, hosted C with libc) and
+ * qos/appside (the app-side runtime, freestanding).  This is the
+ * bootstrap design's HAL contract realized on a host OS: "the HAL is a
+ * table delivered as a C pointer, called like regular C functions" --
+ * the app image contains NO libc and NO syscalls; every effect it can
+ * have on the world goes through this table, and the table's entries
+ * are the image's runtime capability surface (the link-time fpr_g_
+ * import set remains the static one, exactly as on bare metal).
+ *
+ * Only fixed-width C ABI types cross the boundary: the host and the
+ * app are separately linked images that happen to share an address
+ * space, the same relationship System.qa has with a loaded process on
+ * virt.  No V values cross it in v1 -- both sides build their own.
+ */
+#ifndef QOS_ABI_H
+#define QOS_ABI_H
+
+#include <stdint.h>
+
+#define QOS_ABI_VERSION 22u /* v22: the host's memory size (run budgets); v21: worker-backed compile (tag 7 retired); v20: app worker doorbells and timer parking; v19: explicit lifecycle; v18: tag 4 checks RELOC and IMPORT against LOAD's relsha */
+
+/* ---- the address plan (linux-x86-64) --------------------------------
+ * The host is linked non-PIE (default 0x400000 text); the arena is a
+ * fixed mmap well away from it.  The image SLOT is the arena's first
+ * QOS_SLOT_SIZE bytes, reserved via buddy_reserve_range -- so unlike
+ * build-process-app.sh there is no +wordsize header bias to extract
+ * from a symbol table: the link address is a CONSTANT, and an app.qa
+ * built today loads under any qosp built tomorrow.  Everything after
+ * the image is the APP'S OWN arena (v12): the host hands it over in
+ * the boot record and the app runs the buddy -- behind its memory
+ * actor (docs/MEMORY.md) -- itself; the host allocates nothing there. */
+/* 16 GiB everywhere but macOS, which reserves 0x180000000-0x7000000000 in
+ * every process (the dyld shared region, then a no-access block): a hint
+ * in there is never honoured, so the Darwin slot is 1 TiB.  App images for
+ * macOS are freestanding ELF (no __APPLE__), so qos-app.mk passes the base. */
+#ifndef QOS_ARENA_BASE
+#ifdef __APPLE__
+#define QOS_ARENA_BASE 0x10000000000ul
+#else
+#define QOS_ARENA_BASE 0x400000000ul
+#endif
+#endif
+/* The arena has no size of its own: the host RESERVES address space at the
+ * base -- the largest span it can get, from QOS_ARENA_MAX down -- and the OS
+ * commits pages as the app touches them.  The size arrives in the boot
+ * record; nothing is linked into the app (docs/2026-09-19-BOUNDS.md).  QOS_ARENA_MIN is
+ * the image window below and room for the app's own heap. */
+#define QOS_ARENA_MAX (1ul << 40) /* the buddy's largest block */
+#define QOS_ARENA_MIN (4ul << 30)
+/* The image window.  An app image is linked non-PIC at the base (a plugin is
+ * relocatable and lives in the app's own heap: docs/2026-10-01-IMPORT-TABLE.md).
+ * A relocatable app image would retire this number too. */
+#define QOS_SLOT_SIZE (1ul << 30) /* matches the SLOT LENGTH in link-qosapp*.ld */
+#define QOS_SLOT_BASE QOS_ARENA_BASE
+/* syscall channel tags (boot->syscall_fn): 2 kv-append, 3 kv-replay,
+ * 4 publish-plugin (payload = a qos_plugin_t: a plugin the app has
+ * already placed in its own heap, relocated and completed; the host
+ * checks it, makes its code r-x and returns the module-table address
+ * as the int64, or <0 with an error string in out),
+ * 5 kv record index, 6 sleep (payload = decimal MICROSECONDS text;
+ * the app-side Sys.sleepUs backend -- weak/strong linking cannot
+ * cross the image boundary, so the sleep goes through the channel
+ * every other host service already uses), 7 compile (RETIRED in v21:
+ * the compile_* table entries below replace it).  Results and size
+ * limits of tags 2/3/5 (incl. -6, "the reply needs N bytes", which lets a
+ * replay outgrow the app's fixed buffer) are qos/store_abi.h, shared with
+ * the native trampoline. */
+#define QOS_SYS_LOADQA 4
+/* tag 4's payload (v16).  The APP interprets the plugin's archive -- with
+ * mods/qar.fpr and mods/manifest.fpr, the code the kernel and the host
+ * launch with -- places it, and hands over what it did; the host parses
+ * nothing, not even the LOAD section's text.
+ * Spans point into the app's own Strings: one address space, so a pointer
+ * pass, the same discipline gfx_render uses. */
+typedef struct { const unsigned char *p; uint64_t n; } qos_span_t;
+typedef struct {
+  qos_span_t id, abi;
+  qos_span_t sha;  /* the sha-256 the LOAD section claims for IMAGE (64 hex), or empty */
+  qos_span_t img;  /* the archive's IMAGE bytes, as shipped (the sha's subject) */
+  uint64_t base;   /* v16: where the APP placed the image (64 KiB-aligned, in its arena) */
+  uint64_t entry, execsz, rwoff, memsz; /* LOAD's numbers, offsets from base */
+  /* v18: what LOAD claims for RELOC || IMPORT (64 hex, or empty), and the two
+   * sections as shipped -- they change what the image does as surely as
+   * IMAGE does (docs/2026-10-03-PREEXISTING-FAILURES.md) */
+  qos_span_t relsha, rel, imp;
+} qos_plugin_t;
+/* v16: an app's export table (tools/mkexports.py): a count word, then rows
+ * sorted by name.  A plugin's imports are completed from it by name. */
+typedef struct { const char *name; uint64_t addr, size; } qos_export_t;
+#define QOS_SYS_SLEEPUS 6
+#define QOS_SYS_COMPILE 7 /* retired in v21: the compile_* entries */
+/* v17: tag 8 unload-plugin (payload = a qos_unload_t).  The process a
+ * launched image belonged to has ended and the app is about to free its
+ * block (appside/entry.c plug_image_quiet): the host makes the code pages
+ * writable again, so the block can be reused as heap. */
+#define QOS_SYS_UNLOADQA 8
+typedef struct { uint64_t base, execsz; } qos_unload_t;
+
+/* ---- the HAL table --------------------------------------------------
+ * The entries mirror the obligations runtime/posix's co-compiled HAL
+ * satisfies (hal.c, stubs.c/net.c), so the SAME FPRISC surface --
+ * console via the uart register model, mtime via the clint model,
+ * `device "name"` discovery, netPoll/netRead/netWrite/netClose --
+ * works unchanged; only the dispatch is a table call instead of a
+ * link-time bind.  Nullable tiers (gfx) are NULL when the host was
+ * built without them; the app-side shim panics honestly on use,
+ * matching stubs.c's missing-capability behavior. */
+typedef struct {
+  uint64_t version; /* QOS_ABI_VERSION */
+  uint64_t nharts;  /* v2: the host's RESOLVED hart-thread count (env
+                     * FPR_HARTS, else the online-CPU count, clamped);
+                     * the app clamps again to its own compile-time
+                     * FPR_NHARTS cap and reports the result via
+                     * Sys.harts.  1 under a v1-shaped single-hart run. */
+
+  /* console + machine */
+  void (*putc)(char c);
+  void (*poweroff)(int code); /* terminates the "machine" (the host) */
+  void (*wfi)(void);          /* idle pacing for the app's hart loop */
+
+  /* the register tier: uart/clint pseudo-bus, same addresses as the
+   * posix HAL's model (qos/portable/haltab.c holds the dispatch) */
+  uint64_t (*mmio_read)(uint64_t addr, uint32_t width);
+  void (*mmio_write)(uint64_t addr, uint64_t v, uint32_t width);
+
+  /* device discovery by name: 1 + *base filled, or 0 = unknown (the
+   * app-side shim turns 0 into the same honest panic virt/posix use) */
+  int (*dev_lookup)(const char *name, uint64_t len, uint64_t *base);
+
+  /* net: the posix contract verbatim (one connection, poll-driven).
+   * poll: 0 no conn, 1 open, 2 open+rx.  read drains into dst, returns
+   * bytes.  write is blocking-full, returns len.  close keeps listening. */
+  /* v6: connection-addressed (multi-conn).  poll returns a connection
+   * id (1..) with buffered rx, else 0; read/write/close take the id. */
+  int64_t (*net_poll)(void);
+  int64_t (*net_read)(int64_t id, char *dst, uint64_t cap);
+  int64_t (*net_write)(int64_t id, const char *src, uint64_t len);
+  int64_t (*net_close)(int64_t id);
+
+  /* gfx (NULLABLE: NULL in a host built without GFX=1 -- the app-side
+   * shim panics honestly on use, the missing-capability behavior).
+   * gfx_render takes the scene VALUE as a uint64_t: the host walks it
+   * read-only through the shared fpr.h layout -- valid because the two
+   * images share one address space; results leave via out-params and
+   * the APP builds its own V results with its own allocator. */
+  void (*gfx_init)(int w, int h);
+  int (*gfx_render)(uint64_t scene, int64_t *draws, int64_t *dyn_bytes);
+  int (*gfx_save_ppm)(const char *path);
+  int (*gfx_input_poll)(int64_t *kind, int64_t *a, int64_t *c);
+
+  /* ---- v2 additions (appended: v1 offsets unchanged) ----------------
+   * start_hart (NULLABLE: NULL = single-hart host): create one host
+   * thread for app hart `idx` and call fn(idx) on it -- the posix
+   * pthread_create dance done host-side, because the app is
+   * freestanding and cannot make threads.  The host trampoline owns
+   * the thread; it joins them all after the entry returns (every hart
+   * loop exits through fpr_process_done, so the joins are prompt). */
+  int (*start_hart)(uint64_t idx, void (*fn)(uint64_t idx));
+
+  /* ---- v3 additions (appended: earlier offsets unchanged) -----------
+   * gfx_dims: the FBO size gfx_init settled on -- the AUTO-RESOLUTION
+   * answer when the app passed 0 0 and the host sized the frame to the
+   * connected display's own mode.  NULL on GFX-less hosts. */
+  void (*gfx_dims)(int *w, int *h);
+
+  /* ---- v4 additions (appended: earlier offsets unchanged) -----------
+   * set_log_sink: the UNIFIED LOG PLANE (hostlog.h).  The app hands
+   * the host its ring writer (fpr_logput at sev 3 = host) and every
+   * qos_hostlog line -- DRM probe results, evdev opens, plugin load
+   * ranges, mprotect boundaries -- lands in the app's /logs/host ring
+   * as well as stderr; lines from before registration replay in
+   * order.  entry.c registers it right after the hart-0 world is up,
+   * so an app's very first frame can already browse the host's boot
+   * story. */
+  void (*set_log_sink)(void (*sink)(const char *line, uint64_t n));
+
+  /* ---- v5 additions (appended: earlier offsets unchanged) -----------
+   * the disk tier: qosp.disk as an array of 4 KiB pages -- hal/virt/
+   * blk.c's policy-free contract, table-dispatched (blk_raw.h).  ALL
+   * record/log/file policy stays in FPRISC (mods/qlog.fpr): the SAME
+   * module System.qa runs over virtio-blk on native runs here over a
+   * host file, and tools/mkdisk.py seeds either.  blk_pages returns 0
+   * when the backing file could not be opened -- the honest no-disk
+   * state system.fpr already degrades on; read/write return -1 out of
+   * range (the app-side shim panics, matching virt). */
+  int64_t (*blk_pages)(void);
+  int64_t (*blk_read)(uint64_t page, char *dst /* 4096 bytes */);
+  int64_t (*blk_write)(uint64_t page, const char *src, uint64_t len);
+
+  /* ---- v7 additions (appended: earlier offsets unchanged) -----------
+   * the sound tier: one procedural voice per call (hal/unix/snd_raw.h:
+   * wave, start/end Hz, ms, milli-volume, ms delay), mixed by the host.
+   * NULL on a host without it; the app-side shim reports the missing
+   * capability the same way gfx does. */
+  int (*snd_play)(int64_t wave, int64_t f0, int64_t f1, int64_t ms, int64_t vol, int64_t delay);
+
+  /* ---- v8 additions (appended: earlier offsets unchanged) -----------
+   * registered meshes: the program carries its own geometry (tools/
+   * mkmesh.py from an STL: milli ints, 9 per triangle) and hands it to
+   * the walker once after glInit; the name is then an Ent mesh id like
+   * cube / plane / sphere.  Returns the triangle count, -1 malformed.
+   * NULL without gfx, like the other gfx slots. */
+  int64_t (*gfx_mesh_load)(const char *name, const char *text, uint64_t len);
+
+  /* ---- v9 additions (appended: earlier offsets unchanged) -----------
+   * the music channel (snd_raw.h): one MP3 beside the .qa, decoded by
+   * the host as it plays, looped, under the effects at vol/1000. */
+  int (*snd_music)(const char *path, int64_t vol);
+
+  /* ---- v10 additions (appended: earlier offsets unchanged) ----------
+   * the 2D layer: render the scene, then a List of Ent in scene2d's
+   * pixel space (the Int camera at dist milli) over it with the depth
+   * cleared -- a UI on top of a 3D board, one present. */
+  int (*gfx_render_ui)(uint64_t scene, uint64_t ui, int64_t dist, int64_t *draws, int64_t *dyn_bytes);
+
+  /* ---- v11 additions (appended: earlier offsets unchanged) ----------
+   * the wall clock: seconds since 1970-01-01 UTC, for records that a
+   * person will read back (a receipt's time).  0 where the host has no
+   * clock; the monotonic mtime stays the timer. */
+  int64_t (*clock_now)(void);
+  /* ---- v13 additions ------------------------------------------------
+   * the stack guard: the app's runtime carves actor stacks out of its own
+   * arena but cannot make memory inaccessible; the host can.  The app
+   * registers `current` so the host's fault handler can ask WHICH actor
+   * ran off its stack and say so by name (docs/2026-09-19-BOUNDS.md). */
+  void (*stack_guard)(void *lo, uint64_t size);
+  void (*stack_unguard)(void *lo, uint64_t size);
+  void (*set_stack_query)(void *(*current)(uint64_t *id, uint64_t *size));
+  /* ---- v14 addition -------------------------------------------------
+   * the app's buddy frees a large block: give its pages back to the OS
+   * (the arena is a reservation; only the host can un-commit it) */
+  void (*heap_release)(void *p, uint64_t bytes);
+  /* v15: worker-backed disk requests, with copied buffers. */
+  void *(*blk_submit)(uint64_t page, const char *src, uint64_t len, int write);
+  int (*blk_done)(void *job);
+  int64_t (*blk_result)(void *job, char *dst);
+  void (*blk_release)(void *job);
+  /* v19: host lifecycle. Request is a latched SIGINT/SIGTERM number, or 0.
+   * Completion acknowledges the app's own quiesce/drain/flush sequence; it
+   * does not itself flush storage. Readiness is explicitly published by the
+   * app, after its required services have initialized, never at image entry. */
+  int (*shutdown_requested)(void);
+  void (*shutdown_complete)(int status);
+  int (*ready)(void);
+  /* Arms the same deadline for ordinary app-initiated graceful shutdown,
+   * without inventing an OS signal or terminating the app's return path. */
+  void (*shutdown_begin)(void);
+  /* v20: the loaded app owns its worker IDs. These doorbells are separate
+   * from the host Base runtime and its own scheduler/park state. */
+  void (*hart_wait)(uint64_t hart);
+  void (*hart_ring)(uint64_t hart);
+  void (*hart_clear)(uint64_t hart);
+  void (*hart_timer_arm)(uint64_t hart, uint64_t ticks);
+  void (*hart_timer_park)(uint64_t hart);
+  /* v21: the compiler bridge (portable/compile.c + tools/fprd.py),
+   * worker-backed like the disk's v15 entries: submit copies the request
+   * ("<profile>\n<source>") and queues it for one host thread; the caller
+   * parks between done polls, so a compile holds no hart.  reply gives the
+   * framed reply's byte count ("ok\n..." / "err\n...") and a pointer to
+   * it, valid until release, or <0: -2 no compiler server, -3 it stopped
+   * answering, -1 any other error.  release drops the caller's reference
+   * (also the way to abandon a running job). */
+  void *(*compile_submit)(const char *pay, uint64_t plen);
+  int (*compile_done)(void *job);
+  int64_t (*compile_reply)(void *job, const char **bytes);
+  void (*compile_release)(void *job);
+  /* v22: the host's physical memory in bytes, 0 when it cannot say.  The
+   * arena is address space (reserved, committed as touched), so it says
+   * nothing about how much a program may really take: a launcher sizes a
+   * confined program's budget from this (Sys.memTotal; the Editor's Run). */
+  uint64_t (*mem_total)(void);
+} qos_hal_t;
+
+/* ---- the memory-growth grant (RETIRED in v12) ----------------------
+ * Layout-identical to fpr_grant_t (fpr.h) on both sides; the boot
+ * record keeps the slot for layout stability, but a v12 host sets it
+ * NULL: the app owns its arena and never asks the host for memory. */
+typedef struct {
+  void *ptr; /* NULL = denied */
+  uint64_t size;
+} qos_grant_t;
+
+/* ---- the boot record ------------------------------------------------
+ * Everything the Loader stage hands the app, in one versioned struct
+ * (the ABI can grow by appending fields; abi_version gates readers).
+ * caps is System.qa's serialized grant format unchanged:
+ * "appid\nurl mode\n" lines (docs/2026-07-19-QA-FORMAT.md) -- the FPRISC side
+ * reads it via Sys.caps and enforces its own gate, equal strength to
+ * the bare-metal process model since neither has hardware behind it. */
+typedef struct {
+  uint64_t abi_version;
+  const qos_hal_t *hal;
+  void *heap_base; /* v1..v11: the app's first slab (slot space past the
+                    * image).  v12: unused (0) -- see arena_base below */
+  uint64_t heap_size;
+  qos_grant_t (*grow)(uint64_t want_bytes); /* v12: NULL (retired) */
+  const unsigned char *caps;
+  uint64_t caps_len;
+  /* the storage syscall channel, tag-compatible with System.qa's
+   * trampoline (process.c): 2 = kv append, 3 = kv replay */
+  int64_t (*syscall_fn)(uint64_t tag, const char *pay, uint64_t len,
+                        char *out, uint64_t outcap);
+  /* ---- v2 additions (appended: v1 offsets unchanged) ----------------
+   * tls_off: the TLS BORROW.  The app image carries no TLS block, but
+   * multi-hart needs a per-hart-thread cell for the hart pointer (and
+   * the x64 a6/a7 arg-staging cells).  qosp declares one __thread
+   * borrow block per hart thread --
+   *
+   *     struct { void *hart; uint64_t a6, a7; }   (offsets 0/8/16)
+   *
+   * -- and publishes its displacement from the thread pointer here.
+   * The executable's static TLS block sits at the SAME displacement in
+   * every thread, so one constant serves all harts; --target=qx64/qa64
+   * code reads it from the plain global fpr_g_tlsoff (entry.c copies
+   * it there before anything else runs), and fpr.h's FPR_QOSAPP
+   * accessors give the C-side runtime the same view. */
+  uint64_t tls_off;
+  /* ---- v12 additions (appended: earlier offsets unchanged) ----------
+   * THE APP OWNS ITS ARENA.  [arena_base, arena_base + arena_size) is
+   * every byte of the mapped arena past the loaded image, and the app
+   * runs its own buddy over it, behind its memory actor -- plugins are
+   * placed in its blocks too (v16).  The host keeps no allocator over
+   * the arena and writes nothing into it: tag 4 only makes a plugin's
+   * code pages r-x.  The first slab, every growth, and every free
+   * happen inside the app; the host's grow callback and its mutex are
+   * gone with them. */
+  void *arena_base;
+  uint64_t arena_size;
+} qos_boot_t;
+
+/* ---- the entry ------------------------------------------------------
+ * ENTRY(qos_app_entry) in link-qosapp.ld: the loader reads it from
+ * e_entry, the way any ELF loader would.  A plain callable function,
+ * same philosophy as fpr_process_entry -- we are being called by an
+ * already-running host, not booting hardware.  The app's main-actor
+ * result is RENDERED (str) into result_out (truncated to result_cap,
+ * NUL-terminated) rather than returned as a V: the host has no FPRISC
+ * runtime to interpret a V with, and the string form is what it would
+ * print anyway.  Returns 0 on clean completion. */
+typedef int64_t (*qos_app_entry_t)(const qos_boot_t *boot, char *result_out,
+                                   uint64_t result_cap);
+
+#endif /* QOS_ABI_H */
