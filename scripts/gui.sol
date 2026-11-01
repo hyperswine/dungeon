@@ -49,15 +49,14 @@ waitExit job tries =
   else _ = sleepMs 100; waitExit next (tries - 1).
 start id =
   root = C.need (IO.cwd Unit);
-  sdk = C.qosHome Unit;
   scratch = tempDir "{id}-gui";
   fifo = "{scratch}/keys.evd";
   _ = C.command ["/usr/bin/mkfifo",fifo];
   log = "{root}/evidence/game.log";
   _ = C.command ["/bin/rm","-f",log];
-  stage = P.inDir scratch (P.withEnv "FPR_PORT" "0" (P.withEnv "FPR_DISK" "{scratch}/disk"
-    (P.withEnv "FPR_DISK_MB" "32" (P.withEnv "FPR_EVDEV" fifo (P.spec ["/bin/sh","-c",
-      "exec > \"$2\" 2>&1; exec 3<> \"$1\"; shift 2; exec \"$@\"","game",fifo,log,"{sdk}/runtime/qosp-gl","--yes","--trace","{root}/build/{id}.qa"])))));
+  # `qos run` creates the fresh disk, checks the image against its SDK and execs the host.
+  stage = P.inDir scratch (P.withEnv "FPR_EVDEV" fifo (P.spec ["/bin/sh","-c",
+    "exec > \"$2\" 2>&1; exec 3<> \"$1\"; shift 2; exec \"$@\"","game",fifo,log,"qos","run",root,"--disk","{scratch}/disk","--trace"]));
   job = C.need (Proc.start (PipelineSpec [stage] (PipeBytes (Bytes.empty Unit))
     (PipeCapture 4096) (PipeCapture 32768) 120000 PipeFail));
   _ = waitReady log 600;

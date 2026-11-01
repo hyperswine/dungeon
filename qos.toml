@@ -1,0 +1,18 @@
+manifest = 2
+
+[app]
+id = "dungeon"
+name = "Dungeon"
+version = "1.0.0"
+kind = "app"
+
+[build]
+entry = "src/dungeon.fpr"
+target = "qos-portable"
+
+[run]
+display = "gl"
+disk-mb = 32
+
+[sdk]
+version = "0.3.0"

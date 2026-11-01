@@ -22,5 +22,5 @@ testGame u =
   _ = C.writeText "evidence/rules.log" rules;
   C.report "evidence/results.json" (J.JObj [("passed",J.JBool True),("runner",J.JStr "Sol"),
     ("checks",J.JArr (List.map J.JStr ["upstream pure rule suite","original 3D title","start game","movement","PNG snapshots","clean quit"])),
-    ("build",J.JStr "native compiler + Sol ELF/QAR2 packager; no Make/Python")]).
+    ("build",J.JStr "qos build and qos run (QOS Portable SDK, qos.toml v2)")]).
 > testGame Unit.

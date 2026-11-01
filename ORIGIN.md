@@ -15,8 +15,6 @@ Local changes:
 - Package the application in its own repository and retain its original behavior.
 - Add Sol build/launch/test orchestration and isolated, ignored data directories.
 - Resolve app-local imports within this repository and standard modules through installed toolchain homes.
-- Use QOS app-side ABI support pinned to installed SDK revision `f4d8ec22a90f6a11f62d15c340f3360a1ca4dbc3`.
-- Read runtime C/header/context-switch files from the installed FP-RISC formula; do not copy a compiler checkout.
-- Replace the former Make/Python packaging path with a checked Sol ELF/QAR2 implementation.
+- Build and run with the QOS Portable SDK's `qos build` / `qos run` (`qos.toml` v2, `kind = "app"`). The app-side platform files and the matching FP-RISC runtime are the SDK's private build inputs; no copy is vendored. (Earlier revisions vendored them under `support/` and packaged with a Sol ELF/QAR2 writer.)
 
 Generated artifacts and test captures are not upstream source; reports identify the checks actually run.
