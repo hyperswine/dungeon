@@ -9,5 +9,5 @@
     "PNG snapshots",
     "clean quit"
   ],
-  "build": "native compiler + Sol ELF/QAR2 packager; no Make/Python"
+  "build": "qos build and qos run (QOS Portable SDK, qos.toml v2)"
 }
