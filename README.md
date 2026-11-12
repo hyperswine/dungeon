@@ -37,3 +37,7 @@ The SDK's `qos` command needs Python 3.11+, Clang and lld. macOS `sips` exports 
 ## Source and license
 
 Extracted from [hyperswine/qos](https://github.com/hyperswine/qos/tree/7b5f9c122ada1fe429a865a0a48fdd59d2aa1e2f) at `7b5f9c122ada1fe429a865a0a48fdd59d2aa1e2f`. See [ORIGIN.md](ORIGIN.md) for the source map and local changes, and [LICENSE](LICENSE) for the upstream MIT license. No existing application data, private credentials, deployed host configuration or original source checkout is required.
+
+## Architecture proposal
+
+[Migration to pure game MVU](docs/2026-11-12-GAME-MVU.md)
