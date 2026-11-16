@@ -377,5 +377,5 @@ colOf k = dim.
 
 # ---- boot ---------------------------------------------------------------------------------
 # The window, the session and the frame loop are the runner's (mods/gamerun).
-main = Run.run { name = "dungeon", width = uiW, height = uiH, meshes = Nil, frame = 160000, flags = 0, sound = Run.silent }
+main = Run.run { name = "dungeon", width = uiW, height = uiH, meshes = Nil, frame = 160000, flags = 0, sound = Run.silent, storage = False }
                (Game.app D.init D.update D.subs view).
