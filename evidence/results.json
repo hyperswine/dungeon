@@ -3,6 +3,7 @@
   "runner": "Sol",
   "checks": [
     "upstream pure rule suite",
+    "headless game through std/game (bindings, queue, announcements, capture, quit)",
     "original 3D title",
     "start game",
     "movement",

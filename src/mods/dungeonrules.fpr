@@ -509,10 +509,12 @@ tick m =
   take (follow m1).
 take m = case m.keys of
     Nil -> m
-  | k :: r -> key { m | keys = r } k.
+  | a :: r -> act { m | keys = r } a.
 # the live window also sends kind-1 characters (negative codes)
 enqueue m k | k < 0 = m.
-enqueue m k = { m | keys = m.keys + (k :: Nil) }.
+enqueue m k = enqueueAct m (decode k).
+# what the queue holds is what the player ASKED FOR, already decoded
+enqueueAct m a = { m | keys = m.keys + (a :: Nil) }.
 # the camera eases toward the player rather than snapping: one sixth of
 # the remaining distance each tick is the usual critically-damped feel
 # ...and it is clamped to the board, so standing in a corner does not
@@ -529,27 +531,45 @@ follow m =
   tz = clampI (m.py * cell) (camMzN * cell) ((m.h - 1 - camMzS) * cell);
   { m | camx = m.camx + (tx - m.camx) / 6, camz = m.camz + (tz - m.camz) / 6 }.
 
-key m k | k == 16 = { m | quit = 1 }.                         # q
-key m k | k == 25 = { m | snap = m.snap + 1 }.                # p: any screen
-key m k | m.screen == scTitle = start m.
-key m k | m.screen == scHelp = { m | screen = scPlay }.
-key m k | m.screen != scPlay = restartKey m k.
-key m 105 = walk m dirLeft.
-key m 106 = walk m dirRight.
-key m 103 = walk m dirUp.
-key m 108 = walk m dirDown.
-key m 30 = walk m dirLeft.                                    # a
-key m 32 = walk m dirRight.                                   # d
-key m 17 = walk m dirUp.                                      # w
-key m 31 = walk m dirDown.                                    # s
-key m 57 = interact m.                                        # space
-key m 2 = useSlot m 0.
-key m 3 = useSlot m 1.
-key m 4 = useSlot m 2.
-key m 5 = useSlot m 3.
-key m 19 = start m.                                           # r
-key m 35 = { m | screen = scHelp }.                           # h
-key m k = m.
-restartKey m k | k == 19 = start m.
-restartKey m k = m.
+# ---- what the player can ask for ----------------------------------------------------------
+# The rules are driven by ACTIONS; a key is only one way to ask for one. W and
+# the up arrow are the same Move. Other is a key with no meaning of its own:
+# it still starts a game from the title and leaves the help screen.
+Action = Type (Move d | Interact | UseSlot i | Restart | Help | Capture | Quit | Other).
+
+decode 16 = Quit.                                             # q
+decode 25 = Capture.                                          # p
+decode 105 = Move dirLeft.
+decode 106 = Move dirRight.
+decode 103 = Move dirUp.
+decode 108 = Move dirDown.
+decode 30 = Move dirLeft.                                     # a
+decode 32 = Move dirRight.                                    # d
+decode 17 = Move dirUp.                                       # w
+decode 31 = Move dirDown.                                     # s
+decode 57 = Interact.                                         # space
+decode 2 = UseSlot 0.
+decode 3 = UseSlot 1.
+decode 4 = UseSlot 2.
+decode 5 = UseSlot 3.
+decode 19 = Restart.                                          # r
+decode 35 = Help.                                             # h
+decode k = Other.
+
+act m Quit = { m | quit = 1 }.
+act m Capture = { m | snap = m.snap + 1 }.                    # any screen
+act m a | m.screen == scTitle = start m.
+act m a | m.screen == scHelp = { m | screen = scPlay }.
+act m a | m.screen != scPlay = restartAct m a.
+act m (Move d) = walk m d.
+act m Interact = interact m.
+act m (UseSlot i) = useSlot m i.
+act m Restart = start m.
+act m Help = { m | screen = scHelp }.
+act m a = m.
+restartAct m Restart = start m.
+restartAct m a = m.
+
+# the key-driven entry the rule tests fold over: a key is its action
+key m k = act m (decode k).
 start m = { initModel | screen = scPlay, snap = m.snap, ms = m.ms, keys = m.keys }.

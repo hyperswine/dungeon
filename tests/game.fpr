@@ -1,0 +1,75 @@
+# The game as its update loop sees it, with no window: Game.play feeds keys
+# and ticks through the game's own subscriptions and answers the model and
+# every effect update asked for (docs/2026-11-12-GAME-MVU.md, step 4).
+unsafe program.
+
+Game = use "std/game".
+D = use "../src/mods/dungeongame".
+R = use "../src/mods/dungeonrules".
+
+# the view is not under test: any element will do
+app = Game.app D.init D.update D.subs (fn m -> Game.layers 0 0).
+
+tick = Game.Elapsed R.tickMs.
+key k = Game.Key k.
+# press a key and let a tick take it
+press k = [key k, tick].
+play inputs = Game.play app 0 inputs.
+
+check label ok = print (if ok then "ok  {label}" else "FAIL {label}").
+count Nil = 0.
+count (x :: r) = 1 + count r.
+logs es = Game.logged es.
+quits Nil = 0.
+quits (Game.EQuit :: r) = 1 + quits r.
+quits (e :: r) = quits r.
+last Nil = "".
+last (x :: Nil) = x.
+last (x :: r) = last r.
+
+kEnter = 28. kUp = 103. kW = 17. kRight = 106. kD = 32. kP = 25. kQ = 16. kSpace = 57.
+
+main =
+  # the title screen: any key starts, taken on the next tick, not before
+  (m0, e0) = play [key kEnter];
+  _ = check "a key is only queued until a tick" (m0.screen == R.scTitle);
+  (m1, e1) = play (press kEnter);
+  _ = check "the tick takes it: play starts" (m1.screen == R.scPlay);
+  # equivalent bindings: W and the up arrow, D and the right arrow
+  (a, ea) = play (press kEnter + press kUp + press kRight);
+  (b, eb) = play (press kEnter + press kW + press kD);
+  _ = check "W is the up arrow, D the right arrow" (a.px == b.px and a.py == b.py and a.turn == b.turn and a.msg == b.msg);
+  # queued movement: two keys inside one tick are two turns, one a tick
+  (q1, eq1) = play (press kEnter + [key kRight, key kRight, tick]);
+  (q2, eq2) = play (press kEnter + [key kRight, key kRight, tick, tick]);
+  (s2, es2) = play (press kEnter + press kRight + press kRight);
+  _ = check "the second queued key waits for its tick" (count q1.keys == 1);
+  _ = check "queued keys play as the same turns" (q2.px == s2.px and q2.py == s2.py and q2.turn == s2.turn and count q2.keys == 0);
+  # one announcement per changed message: idle ticks say nothing more
+  (t1, et1) = play (press kEnter + press kSpace);
+  (t2, et2) = play (press kEnter + press kSpace + [tick, tick, tick, tick]);
+  _ = check "a changed message is announced" (count (logs et1) > 0);
+  _ = check "and only once, however many ticks follow" (count (logs et2) == count (logs et1));
+  # one capture per request, whatever is rendered; view performs nothing
+  (c1, ec1) = play (press kEnter + press kP + [tick, tick]);
+  _ = check "one capture for one P" (Game.captures ec1 == 1);
+  (c2, ec2) = play (press kEnter + press kP + press kP);
+  _ = check "two for two" (Game.captures ec2 == 2);
+  # quit: once, and the run ends there
+  (z, ez) = play (press kEnter + press kQ + press kRight + press kRight);
+  _ = check "quit is asked for once" (quits ez == 1);
+  _ = check "and nothing after it is taken" (z.turn == m1.turn and z.px == m1.px);
+  # a session to its end: walk into trouble until the game is over, read the transcript
+  (d, ed) = play (press kEnter + wander 400);
+  _ = check "a long session keeps its queue empty" (count d.keys == 0);
+  _ = check "the transcript's last line is the model's message or the outcome" (over d ed);
+  print "dungeon game: done".
+
+# right, down, interact, left, up: enough to meet the level's enemies
+wander 0 = Nil.
+wander n = press kRight + press 108 + press kSpace + press 105 + press kUp + wander (n - 5).
+over m es =
+  line = last (logs es);
+  if m.screen == R.scLost then line == "[dungeon] DIED on turn {m.turn}"
+  else if m.screen == R.scWon then Game.captures es == 0 and count (logs es) > 0
+  else line == "[dungeon] {m.msg}" or m.msg == "".

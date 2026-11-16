@@ -52,20 +52,13 @@
 
 unsafe program.
 
-MV = use "std/mvu".
-Services = use "mods/services".
-EP = use "mods/ep#c66ad65e68dd97f5".
+Game = use "std/game".
+Run = use "mods/gamerun".
 S2 = use "mods/scene2d".
 Fm = use "mods/fontm".
 Core = use "mods/coreutil".
 R = use "mods/dungeonrules".
-
-App = MV.App.
-MQuit = MV.MQuit.
-ETick = MV.ETick.
-EKey = MV.EKey.
-STick = MV.STick.
-SKeys = MV.SKeys.
+D = use "mods/dungeongame".
 
 Gfx = Type (Scene statics dynamics lights camera
           | Ent mesh pos yaw scale color).
@@ -130,38 +123,10 @@ countKind obs k = R.countKind obs k.
 dxOf d = R.dxOf d.
 tickOf m = R.tick m.
 
-# ---- the MVU four ------------------------------------------------------------------------
-init env = initModel.
-
-# the only command this game issues is the one that ends it.  The rules
-# are silent; the SHELL is what speaks, printing a line whenever the
-# recorded message changes -- which is also the headless transcript.
-update env ev m =
-  m2 = step ev m;
-  m3 = announce m m2;
-  case m3.quit of
-    1 -> (m3, MQuit :: Nil)
-  | q -> (m3, Nil).
-announce m m2 | Core.strEq m.msg m2.msg = m2.
-announce m m2 | Core.strEq m2.msg "" = m2.
-announce m m2 =
-  _ = print "[dungeon] {m2.msg}";
-  overLine m2.
-overLine m | m.screen == scWon =
-  _ = print "[dungeon] WON in {m.turn} turns: {m.took} treasure, {lenOf m.ens} enemies left";
-  m.
-overLine m | m.screen == scLost =
-  _ = print "[dungeon] DIED on turn {m.turn}";
-  m.
-overLine m = m.
-
-step ETick m = tickOf m.
-step (EKey k) m = R.enqueue m k.
-step ev m = m.
-
-subs m = STick R.tickMs :: SKeys :: Nil.
-
-view m = (scene m, ui m, m.snap).
+# ---- the game: four pure functions (std/game) ---------------------------------------------
+# init, update and subs are mods/dungeongame.fpr, which needs no window and is
+# what the headless test plays; view is here, with the scene and the HUD.
+view m = Game.layers (scene m) (ui m).
 
 # ---- the 3D board ------------------------------------------------------------------------
 # One cell is `cell` world units (mods/dungeonrules); the board is
@@ -411,15 +376,6 @@ colOf (Key i) = goldCol.
 colOf k = dim.
 
 # ---- boot ---------------------------------------------------------------------------------
-run hub tag app =
-  me = myself 0;
-  ep = Services.graphics hub tag Nil me;
-  (graphics, _) = ep;
-  cfg = {env = (me, 0), mt = hub.mt, tick = 160000, input = graphics, render = graphics};
-  result = MV.game me cfg app;
-  _ = EP.close me ep;
-  _ = print "dungeon over";
-  result.
-main =
-  hub = Services.withGraphics Services.boot uiW uiH;
-  run hub "dungeon" (App init update subs view).
+# The window, the session and the frame loop are the runner's (mods/gamerun).
+main = Run.run { name = "dungeon", width = uiW, height = uiH, meshes = Nil, frame = 160000, flags = 0, sound = Run.silent }
+               (Game.app D.init D.update D.subs view).

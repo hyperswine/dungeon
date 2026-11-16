@@ -8,6 +8,10 @@ testGame u =
   rules = C.command ["./build/rules-check"];
   _ = C.check "dungeon rules failed" (not (Str.contains "FAIL" rules) and Str.contains "dungeon rules: done" rules);
   _ = print rules;
+  _ = C.command ["fpr","build","tests/game.fpr","-o","build/game-check"];
+  played = C.command ["./build/game-check"];
+  _ = C.check "headless game failed" (not (Str.contains "FAIL" played) and Str.contains "dungeon game: done" played);
+  _ = print played;
   (job,fifo,scratch) = G.start "dungeon";
   title = G.shot "dungeon" fifo 1 "title";
   _ = G.key fifo 28;
@@ -20,7 +24,8 @@ testGame u =
   _ = G.key fifo 16;
   _ = G.waitExit job 200;
   _ = C.writeText "evidence/rules.log" rules;
+  _ = C.writeText "evidence/game-headless.log" played;
   C.report "evidence/results.json" (J.JObj [("passed",J.JBool True),("runner",J.JStr "Sol"),
-    ("checks",J.JArr (List.map J.JStr ["upstream pure rule suite","original 3D title","start game","movement","PNG snapshots","clean quit"])),
+    ("checks",J.JArr (List.map J.JStr ["upstream pure rule suite","headless game through std/game (bindings, queue, announcements, capture, quit)","original 3D title","start game","movement","PNG snapshots","clean quit"])),
     ("build",J.JStr "qos build and qos run (QOS Portable SDK, qos.toml v2)")]).
 > testGame Unit.

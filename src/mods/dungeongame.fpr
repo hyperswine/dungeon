@@ -1,0 +1,40 @@
+# dungeongame.fpr -- Dungeon as a std/game app, minus its view.
+#
+# init, update and subs: pure functions over the rules' model
+# (dungeonrules.fpr). Nothing here draws or opens anything, so a test can play
+# a whole session with Game.play and read back the model and what update asked
+# for (tests/game.fpr). The shell (src/dungeon.fpr) adds view and the runner.
+Game = use "std/game".
+O = use "std/option".
+R = use "dungeonrules".
+
+# Everything the player can do reaches update as a Msg: an action decoded from
+# a key, or the tick. update only buffers an action; a turn is taken on the
+# tick, one action a tick, which is what gives the camera frames to ease over
+# and makes a replayed key file play back as a game.
+Msg = Type (Act a | Tick).
+
+init flags = (R.initModel, Game.none).
+
+# The rules are silent; the transition SPEAKS: a line when the recorded message
+# changes (the transcript), a capture when the capture count moved, quit once.
+update msg m =
+  m2 = step msg m;
+  (m2, Game.batch (said m m2 + captured m m2 + left m2)).
+step (Act a) m = R.enqueueAct m a.
+step Tick m = R.tick m.
+
+said m m2 | m.msg == m2.msg = Nil.
+said m m2 | m2.msg == "" = Nil.
+said m m2 = Game.log "[dungeon] {m2.msg}" :: overLine m2.
+overLine m | m.screen == R.scWon = Game.log "[dungeon] WON in {m.turn} turns: {m.took} treasure, {R.lenOf m.ens} enemies left" :: Nil.
+overLine m | m.screen == R.scLost = Game.log "[dungeon] DIED on turn {m.turn}" :: Nil.
+overLine m = Nil.
+captured m m2 | m2.snap == m.snap = Nil.
+captured m m2 = Game.capture :: Nil.
+left m | m.quit == 1 = Game.quit :: Nil.
+left m = Nil.
+
+subs m = [Game.tick R.tickMs Tick, Game.keys keyMsg].
+# the live window also sends characters as negative codes: not keys
+keyMsg k = if k < 0 then O.None else O.Some (Act (R.decode k)).
